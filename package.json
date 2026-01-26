@@ -1,0 +1,26 @@
+{
+  "name": "sans-concept-app-template",
+  "private": true,
+  "packageManager": "pnpm@9.12.1",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "bootstrap": "tsx scripts/bootstrap.ts",
+    "install:skills": "node scripts/install-skills.mjs"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.7.0",
+    "@supabase/supabase-js": "^2.57.4",
+    "next": "^15.5.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.35.0",
+    "eslint-config-next": "^15.5.3",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.2"
+  }
+}

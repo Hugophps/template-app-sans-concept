@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "name": "vercel-react-best-practices",
+      "repo": "vercel-labs/agent-skills",
+      "path": "skills/react-best-practices",
+      "ref": "main",
+      "dest": "vercel-react-best-practices"
+    },
+    {
+      "name": "web-design-guidelines",
+      "repo": "vercel-labs/agent-skills",
+      "path": "skills/web-design-guidelines",
+      "ref": "main"
+    },
+    {
+      "name": "nextjs-app-router-fundamentals",
+      "repo": "wsimmonds/claude-nextjs-skills",
+      "path": "nextjs-app-router-fundamentals",
+      "ref": "main"
+    },
+    {
+      "name": "supabase",
+      "repo": "alinaqi/claude-bootstrap",
+      "path": "skills/supabase",
+      "ref": "main"
+    },
+    {
+      "name": "supabase-reference-architecture",
+      "repo": "jeremylongshore/claude-code-plugins-plus-skills",
+      "path": "plugins/saas-packs/supabase-pack/skills/supabase-reference-architecture",
+      "ref": "main",
+      "method": "git"
+    },
+    {
+      "name": "design-system-starter",
+      "repo": "ArieGoldkin/ai-agent-hub",
+      "path": "skills/design-system-starter",
+      "ref": "main"
+    }
+  ]
+}
