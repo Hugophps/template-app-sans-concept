@@ -506,6 +506,98 @@ function vercelEnv() {
   };
 }
 
+function getVercelAuthToken(): string | null {
+  if (process.env.VERCEL_TOKEN) return process.env.VERCEL_TOKEN;
+
+  const candidates: string[] = [];
+  const appData = process.env.APPDATA || "";
+  const xdgData = process.env.XDG_DATA_HOME || "";
+  if (appData) {
+    candidates.push(join(appData, "xdg.data", "com.vercel.cli", "auth.json"));
+  }
+  if (xdgData) {
+    candidates.push(join(xdgData, "com.vercel.cli", "auth.json"));
+  }
+
+  const home = homedir();
+  candidates.push(join(home, ".vercel", "auth.json"));
+  candidates.push(join(home, ".vercel", "config.json"));
+  candidates.push(join(home, ".local", "share", "com.vercel.cli", "auth.json"));
+  candidates.push(join(home, "Library", "Application Support", "com.vercel.cli", "auth.json"));
+
+  for (const filePath of candidates) {
+    if (!existsSync(filePath)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as Record<string, unknown>;
+      const token = findTokenInObject(parsed);
+      if (token) return token;
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+function findTokenInObject(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const token = findTokenInObject(item);
+      if (token) return token;
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof val === "string" && key.toLowerCase().includes("token")) {
+        return val;
+      }
+      const nested = findTokenInObject(val);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+async function vercelApiRequest<T = unknown>(options: {
+  method: "GET" | "PATCH" | "POST";
+  path: string;
+  body?: Record<string, unknown>;
+  scope?: string;
+  baseUrl?: string;
+}): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
+  const token = getVercelAuthToken();
+  if (!token) {
+    return { ok: false, status: 0, error: "Missing Vercel auth token" };
+  }
+
+  const base = options.baseUrl || "https://api.vercel.com";
+  const url = new URL(`${base}${options.path}`);
+  if (options.scope && options.scope !== "personal") {
+    url.searchParams.set("slug", options.scope);
+  }
+
+  const res = await fetch(url.toString(), {
+    method: options.method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+
+  let data: T | undefined;
+  try {
+    data = (await res.json()) as T;
+  } catch {
+    data = undefined;
+  }
+
+  return { ok: res.ok, status: res.status, data };
+}
+
 function supabaseEnv() {
   return {
     ...process.env
@@ -2221,24 +2313,49 @@ const stepGitRemote: Step = {
 
     const vercelScope = scopes.vercelScope;
     const vercelProject = project.slug;
-    const connectGit = await askYesNo(
-      ask,
-      "Connect Vercel project to this GitHub repo now?"
-    );
-    let vercelGitConnected = false;
-    if (connectGit) {
+
+    while (true) {
+      const setDefault = runCommand(
+        "gh",
+        ["repo", "edit", repoFullName, "--default-branch", "main"],
+        { env: ghEnv(), inherit: true }
+      );
+      if (setDefault.ok) break;
+      await ask("Failed to set GitHub default branch to main. Fix and press Enter to retry.");
+    }
+
+    while (true) {
       const connect = runCommand(
         "vercel",
         [...vercelGlobalArgs(vercelScope, repoPath), "git", "connect", remoteUrl],
         { env: vercelEnv(), inherit: true }
       );
+      if (connect.ok) break;
+      console.log("Vercel git connect failed. Fix and retry.");
+      await ask("Press Enter to retry Vercel git connect.");
+    }
 
-      if (!connect.ok) {
-        console.log("Vercel git connect failed. You can connect manually in Vercel UI.");
-        console.log(`Project: ${vercelProject}`);
-        console.log(`Repo: ${repoFullName}`);
+    const mapStaging = await askYesNo(
+      ask,
+      "Map staging domain to develop preview branch now?"
+    );
+    if (mapStaging) {
+      const stagingDomain = state.data.domains?.stagingDomain;
+      if (!stagingDomain) {
+        console.log("Missing staging domain; skipping mapping.");
       } else {
-        vercelGitConnected = true;
+        while (true) {
+          const res = await vercelApiRequest({
+            method: "PATCH",
+            path: `/v9/projects/${vercelProject}/domains/${stagingDomain}`,
+            body: { gitBranch: "develop" },
+            scope: vercelScope
+          });
+          if (res.ok) break;
+          await ask(
+            "Failed to map staging domain to develop. Fix Vercel auth/domain ownership and press Enter to retry."
+          );
+        }
       }
     }
 
@@ -2260,56 +2377,15 @@ const stepGitRemote: Step = {
         runCommand("git", ["push", "-u", "origin", branch], { cwd: repoPath, inherit: true });
       };
 
-      if (vercelGitConnected) {
-        console.log("Triggering deploys via Git integration...");
-        checkoutBranch("develop");
-        pushBranch("develop");
-        checkoutBranch("main");
-        pushBranch("main");
-        if (currentBranch && currentBranch !== "main") {
-          checkoutBranch(currentBranch);
-        }
-        console.log("Vercel will build preview from develop and production from main.");
-      } else {
-        console.log("Git not connected. Deploying directly from local branches...");
-        runCommand(
-          "vercel",
-          [
-            ...vercelGlobalArgs(vercelScope, repoPath),
-            "link",
-            "--yes",
-            "--project",
-            vercelProject
-          ],
-          { env: vercelEnv(), inherit: true }
-        );
-
-        checkoutBranch("develop");
-        console.log("Deploying preview (Vercel auto domain)...");
-        const preview = runCommand(
-          "vercel",
-          [...vercelGlobalArgs(vercelScope, repoPath), "--yes"],
-          { env: vercelEnv(), inherit: true }
-        );
-        if (!preview.ok) {
-          console.log("Preview deploy failed. Fix config/env vars and retry with `vercel`.");
-        }
-
-        checkoutBranch("main");
-        console.log("Deploying production (Vercel auto domain)...");
-        const prod = runCommand(
-          "vercel",
-          [...vercelGlobalArgs(vercelScope, repoPath), "--prod", "--yes"],
-          { env: vercelEnv(), inherit: true }
-        );
-        if (!prod.ok) {
-          console.log("Production deploy failed. Fix config/env vars and retry with `vercel --prod`.");
-        }
-
-        if (currentBranch && currentBranch !== "main") {
-          checkoutBranch(currentBranch);
-        }
+      console.log("Triggering deploys via Git integration...");
+      checkoutBranch("develop");
+      pushBranch("develop");
+      checkoutBranch("main");
+      pushBranch("main");
+      if (currentBranch && currentBranch !== "main") {
+        checkoutBranch(currentBranch);
       }
+      console.log("Vercel will build preview from develop and production from main.");
     }
 
     return { completed: true };

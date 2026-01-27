@@ -29,6 +29,7 @@ What it does:
 - optionally connects the Vercel project to the GitHub repo
 - optionally deploys preview + production to Vercel (auto domains)
 - optionally sets Supabase env vars on Vercel (preview = staging, production = prod, includes service role key)
+- can map staging domain to the develop preview branch (requires Vercel API auth)
 - writes `APP_TODO.md`
 
 ## Requirements
