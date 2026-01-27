@@ -80,6 +80,11 @@ type TokenCheck = {
   supabaseToken: boolean;
 };
 
+type AuthStatus = {
+  ok: boolean;
+  message?: string;
+};
+
 type BootstrapData = {
   project?: ProjectInfo;
   domains?: DomainInfo;
@@ -265,7 +270,7 @@ function isValidDomain(value: string): boolean {
 }
 
 function isValidEmail(value: string): boolean {
-  return /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(value);
+  return /^[^@\s]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function isValidHexColor(value: string): boolean {
@@ -278,11 +283,11 @@ function isValidLocale(value: string): boolean {
 
 function isValidHttpsUrlOrEmpty(value: string): boolean {
   if (!value) return true;
-  return /^https:\\/\\//.test(value);
+  return /^https:\/\//.test(value);
 }
 
 function isValidHttpsUrl(value: string): boolean {
-  return /^https:\\/\\//.test(value);
+  return /^https:\/\//.test(value);
 }
 
 function isValidRepoUrl(value: string): boolean {
@@ -338,9 +343,106 @@ function ensureDir(pathValue: string) {
   }
 }
 
+function addToPath(dir: string) {
+  if (!dir) return;
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const current = process.env.PATH || "";
+  const parts = current.split(delimiter);
+  if (!parts.includes(dir)) {
+    process.env.PATH = [dir, ...parts].join(delimiter);
+  }
+}
+
+function getWindowsCliPaths(command: string): string[] {
+  const paths: string[] = [];
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const appData = process.env.APPDATA || "";
+
+  if (command === "gh") {
+    paths.push(`${programFiles}\\GitHub CLI\\gh.exe`);
+    paths.push(`${programFilesX86}\\GitHub CLI\\gh.exe`);
+  }
+
+  if (command === "vercel" || command === "supabase") {
+    const cmd = `${command}.cmd`;
+    paths.push(`${appData}\\npm\\${cmd}`);
+    paths.push(`${localAppData}\\npm\\${cmd}`);
+    paths.push(`${localAppData}\\pnpm\\${cmd}`);
+  }
+
+  return paths;
+}
+
+function resolveWindowsCliDir(command: string): string | null {
+  const npmPrefix = runCommand("npm", ["config", "get", "prefix"]);
+  if (npmPrefix.ok) {
+    const prefix = npmPrefix.stdout.trim();
+    if (prefix && (command === "vercel" || command === "supabase")) {
+      const cmd = `${command}.cmd`;
+      const candidate = join(prefix, cmd);
+      if (existsSync(candidate)) return dirname(candidate);
+    }
+  }
+
+  const where = runCommand("cmd", ["/c", "where", command]);
+  if (where.ok && where.stdout) {
+    const first = where.stdout.split(/\r?\n/)[0];
+    if (first) return dirname(first.trim());
+  }
+
+  for (const candidate of getWindowsCliPaths(command)) {
+    if (existsSync(candidate)) return dirname(candidate);
+  }
+
+  return null;
+}
+
+function windowsCliExists(command: string): boolean {
+  for (const candidate of getWindowsCliPaths(command)) {
+    if (existsSync(candidate)) return true;
+  }
+
+  const npmPrefix = runCommand("npm", ["config", "get", "prefix"]);
+  if (npmPrefix.ok) {
+    const prefix = npmPrefix.stdout.trim();
+    if (prefix && (command === "vercel" || command === "supabase")) {
+      const cmd = `${command}.cmd`;
+      if (existsSync(join(prefix, cmd))) return true;
+    }
+  }
+
+  const where = runCommand("cmd", ["/c", "where", command]);
+  return where.ok;
+}
+
 function commandExists(command: string, args: string[] = ["--version"]): boolean {
-  const res = spawnSync(command, args, { stdio: "ignore" });
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || "";
+    const localAppData = process.env.LOCALAPPDATA || "";
+    addToPath(`${appData}\\npm`);
+    addToPath(`${localAppData}\\npm`);
+    addToPath(`${localAppData}\\pnpm`);
+    const dir = resolveWindowsCliDir(command);
+    if (dir) {
+      addToPath(dir);
+    }
+  }
+
+  const res =
+    process.platform === "win32"
+      ? spawnSync("cmd", ["/c", command, ...args], { stdio: "ignore" })
+      : spawnSync(command, args, { stdio: "ignore" });
   if (res.error) return false;
+  return res.status === 0;
+}
+
+function commandInstalledViaNpm(command: string): boolean {
+  if (!["vercel", "supabase"].includes(command)) return false;
+  const res = spawnSync("npm", ["list", "-g", command, "--depth=0"], {
+    stdio: "ignore"
+  });
   return res.status === 0;
 }
 
@@ -356,7 +458,12 @@ function runCommand(
       ? "inherit"
       : (["pipe", "pipe", "pipe"] as const);
 
-  const res = spawnSync(command, args, {
+  const isWindows = process.platform === "win32";
+  const useCmd = isWindows && command.toLowerCase() !== "cmd";
+  const spawnCommand = useCmd ? "cmd" : command;
+  const spawnArgs = useCmd ? ["/c", command, ...args] : args;
+
+  const res = spawnSync(spawnCommand, spawnArgs, {
     cwd: options?.cwd,
     env: options?.env,
     input: options?.input,
@@ -387,6 +494,12 @@ function vercelArgs(scope?: string) {
   return args;
 }
 
+function vercelGlobalArgs(scope?: string, cwd?: string) {
+  const args: string[] = [];
+  if (cwd) args.push("--cwd", cwd);
+  return args.concat(vercelArgs(scope));
+}
+
 function vercelEnv() {
   return {
     ...process.env
@@ -396,6 +509,61 @@ function vercelEnv() {
 function supabaseEnv() {
   return {
     ...process.env
+  };
+}
+
+function checkGhAuth(): AuthStatus {
+  const hasToken = Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
+  const res = runCommand("gh", ["auth", "status", "-h", "github.com"], {
+    env: ghEnv()
+  });
+  if (res.ok) return { ok: true };
+  if (hasToken) {
+    return {
+      ok: false,
+      message: "GITHUB_TOKEN/GH_TOKEN is set but invalid. Fix it or unset to use `gh auth login`."
+    };
+  }
+  return {
+    ok: false,
+    message: "Not authenticated. Run `gh auth login` or set GITHUB_TOKEN."
+  };
+}
+
+function checkVercelAuth(): AuthStatus {
+  const hasToken = Boolean(process.env.VERCEL_TOKEN);
+  const res = runCommand("vercel", ["whoami", ...vercelArgs()], {
+    env: vercelEnv()
+  });
+  if (res.ok) return { ok: true };
+  if (hasToken) {
+    return {
+      ok: false,
+      message: "VERCEL_TOKEN is set but invalid. Fix it or unset to use `vercel login`."
+    };
+  }
+  return {
+    ok: false,
+    message: "Not authenticated. Run `vercel login` or set VERCEL_TOKEN."
+  };
+}
+
+function checkSupabaseAuth(): AuthStatus {
+  const hasToken = Boolean(process.env.SUPABASE_ACCESS_TOKEN);
+  const res = runCommand("supabase", ["projects", "list"], {
+    env: supabaseEnv()
+  });
+  if (res.ok) return { ok: true };
+  if (hasToken) {
+    return {
+      ok: false,
+      message:
+        "SUPABASE_ACCESS_TOKEN is set but invalid. Fix it or unset to use `supabase login`."
+    };
+  }
+  return {
+    ok: false,
+    message: "Not authenticated. Run `supabase login` or set SUPABASE_ACCESS_TOKEN."
   };
 }
 
@@ -437,10 +605,10 @@ function writeAppTodo(state: BootstrapState) {
   lines.push(`- Staging: ${domains?.stagingDomain ?? "TBD"}`);
   lines.push(`- Production: ${domains?.prodDomain ?? "TBD"}`);
   lines.push("");
-  lines.push("## Required local env vars");
-  lines.push("- VERCEL_TOKEN");
-  lines.push("- GITHUB_TOKEN");
-  lines.push("- SUPABASE_ACCESS_TOKEN");
+  lines.push("## Auth for CLIs");
+  lines.push("- GitHub: set GITHUB_TOKEN (or run `gh auth login`)");
+  lines.push("- Vercel: set VERCEL_TOKEN (or run `vercel login`)");
+  lines.push("- Supabase: set SUPABASE_ACCESS_TOKEN (or run `supabase login`)");
   lines.push("");
   lines.push("## Design system access");
   lines.push("- Provide repo URL during bootstrap");
@@ -824,12 +992,12 @@ function writeAppConfig(state: BootstrapState) {
 
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-  const defaultLocale = config.defaultLocale;
+  const migrationLocale = config.defaultLocale;
   const migrationPath = join(repoPath, "supabase", "migrations", "20260126000000_init.sql");
   if (existsSync(migrationPath)) {
     const content = readFileSync(migrationPath, "utf-8")
-      .replace(/default 'en'/g, `default '${defaultLocale}'`)
-      .replace(/values \\(new.id, 'en'\\)/g, `values (new.id, '${defaultLocale}')`);
+      .replace(/default 'en'/g, `default '${migrationLocale}'`)
+      .replace(/values \\(new.id, 'en'\\)/g, `values (new.id, '${migrationLocale}')`);
     writeFileSync(migrationPath, content);
   }
 }
@@ -919,8 +1087,10 @@ function cloneDesignSystemRepo(repoUrl: string): { ok: boolean; path: string; re
   const headPath = join(tempDir, ".git", "HEAD");
   if (existsSync(headPath)) {
     const head = readFileSync(headPath, "utf-8").trim();
-    const match = head.match(/refs\\/heads\\/(.+)/);
-    if (match) ref = match[1];
+    const refPrefix = "ref: refs/heads/";
+    if (head.startsWith(refPrefix)) {
+      ref = head.slice(refPrefix.length);
+    }
   }
 
   return { ok: true, path: tempDir, ref };
@@ -1018,12 +1188,58 @@ const stepCliCheck: Step = {
       { name: "supabase", hint: "Supabase CLI" }
     ];
 
+    const platform = process.platform;
+    const installHints: Record<string, Record<string, string>> = {
+      win32: {
+        gh: "winget install GitHub.cli --accept-source-agreements --accept-package-agreements",
+        vercel: "npm i -g vercel",
+        supabase: "npm i -g supabase"
+      },
+      linux: {
+        gh: "sudo apt-get install gh",
+        vercel: "npm i -g vercel",
+        supabase: "npm i -g supabase"
+      },
+      darwin: {
+        gh: "brew install gh",
+        vercel: "npm i -g vercel",
+        supabase: "npm i -g supabase"
+      }
+    };
+
     while (true) {
-      const missing = required.filter((cmd) => !commandExists(cmd.name));
+      const missing = required.filter((cmd) => {
+        if (commandExists(cmd.name)) return false;
+        if (process.platform === "win32") {
+          if (windowsCliExists(cmd.name)) return false;
+          if (commandInstalledViaNpm(cmd.name)) return false;
+        }
+        return true;
+      });
       if (missing.length === 0) return { completed: true };
 
       console.log("Missing required CLIs:");
-      for (const cmd of missing) console.log(`- ${cmd.name} (${cmd.hint})`);
+      for (const cmd of missing) {
+        console.log(`- ${cmd.name} (${cmd.hint})`);
+        const hint = installHints[platform]?.[cmd.name];
+        if (hint) console.log(`  Install: ${hint}`);
+      }
+      const installNow = await askYesNo(ask, "Install missing CLIs now?");
+      if (installNow) {
+        for (const cmd of missing) {
+          const hint = installHints[platform]?.[cmd.name];
+          if (!hint) continue;
+          const [bin, ...args] = hint.split(" ");
+          console.log(`Installing ${cmd.name}...`);
+          runCommand(bin, args, { inherit: true });
+        }
+      }
+      if (platform === "win32") {
+        for (const cmd of missing) {
+          const dir = resolveWindowsCliDir(cmd.name);
+          if (dir) addToPath(dir);
+        }
+      }
       await ask("Install the missing CLIs, then press Enter to re-check.");
     }
   }
@@ -1031,24 +1247,34 @@ const stepCliCheck: Step = {
 
 const stepTokens: Step = {
   id: "tokens",
-  title: "Check required tokens",
+  title: "Check authentication",
   run: async (state, ask) => {
-    const required = ["VERCEL_TOKEN", "GITHUB_TOKEN", "SUPABASE_ACCESS_TOKEN"];
-
     while (true) {
-      const missing = required.filter((name) => !process.env[name]);
+      const github = checkGhAuth();
+      const vercel = checkVercelAuth();
+      const supabase = checkSupabaseAuth();
+
+      const missing = [
+        { name: "GitHub", status: github },
+        { name: "Vercel", status: vercel },
+        { name: "Supabase", status: supabase }
+      ].filter((entry) => !entry.status.ok);
+
       if (missing.length === 0) {
         state.data.tokens = {
-          vercelToken: true,
-          githubToken: true,
-          supabaseToken: true
+          vercelToken: Boolean(process.env.VERCEL_TOKEN),
+          githubToken: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN),
+          supabaseToken: Boolean(process.env.SUPABASE_ACCESS_TOKEN)
         };
         return { completed: true };
       }
 
-      console.log("Missing required env vars:");
-      for (const name of missing) console.log(`- ${name}`);
-      await ask("Set the missing env vars and press Enter to re-check.");
+      console.log("Missing authentication:");
+      for (const entry of missing) {
+        console.log(`- ${entry.name}`);
+        if (entry.status.message) console.log(`  ${entry.status.message}`);
+      }
+      await ask("Fix authentication (token or CLI login) and press Enter to re-check.");
     }
   }
 };
@@ -1522,11 +1748,26 @@ const stepInfra: Step = {
 
     const vercelProjects = [`${project.slug}-staging`, `${project.slug}-prod`];
     const vercelScope = scopes.vercelScope;
+
+    while (true) {
+      const whoami = runCommand(
+        "vercel",
+        [...vercelGlobalArgs(vercelScope), "whoami"],
+        { env: vercelEnv() }
+      );
+      if (whoami.ok) break;
+
+      console.log("Vercel CLI is not authenticated.");
+      console.log("Run: vercel login (or set VERCEL_TOKEN).");
+      console.log("If VERCEL_TOKEN is set but invalid, unset it and retry.");
+      await ask("Press Enter to re-check Vercel authentication.");
+    }
+
     for (const name of vercelProjects) {
       while (true) {
         const list = runCommand(
           "vercel",
-          ["project", "ls", "--json", ...vercelArgs(vercelScope)],
+          [...vercelGlobalArgs(vercelScope), "project", "ls", "--json"],
           { env: vercelEnv() }
         );
 
@@ -1540,20 +1781,22 @@ const stepInfra: Step = {
         }
 
         console.log(`Create Vercel project: ${name}`);
-        console.log("When prompted, enter the project name exactly.");
         const res = runCommand(
           "vercel",
-          ["project", "add", ...vercelArgs(vercelScope)],
+          [...vercelGlobalArgs(vercelScope), "project", "add", name],
           { env: vercelEnv(), inherit: true }
         );
 
         if (!res.ok) {
-          console.log("Vercel project creation failed. Fix and retry.");
+          const retry = await askYesNo(
+            ask,
+            "Vercel project creation failed. Fix and retry?"
+          );
+          if (!retry) break;
           continue;
         }
 
-        const ok = await askYesNo(ask, `Was ${name} created?`);
-        if (ok) break;
+        break;
       }
     }
 
@@ -1605,17 +1848,40 @@ const stepInfra: Step = {
       "Set NEXT_PUBLIC_LEGAL_MODE on Vercel projects now?"
     );
     if (setLegal) {
-      for (const name of vercelProjects) {
-        console.log(`Setting NEXT_PUBLIC_LEGAL_MODE on ${name}`);
-        console.log(`When prompted, enter value: ${legal.mode}`);
-        runCommand(
-          "vercel",
-          ["env", "add", "NEXT_PUBLIC_LEGAL_MODE", "production", ...vercelArgs(vercelScope)],
-          {
-            env: vercelEnv(),
-            inherit: true
+      const repoPath = state.data.localRepoPath;
+      if (!repoPath) {
+        console.log("Missing local repo path; skipping Vercel env setup.");
+      } else {
+        for (const name of vercelProjects) {
+          console.log(`Linking local repo to ${name}...`);
+          runCommand(
+            "vercel",
+            [...vercelGlobalArgs(vercelScope, repoPath), "link", "--yes", "--project", name],
+            { env: vercelEnv(), inherit: true }
+          );
+
+          console.log(`Setting NEXT_PUBLIC_LEGAL_MODE on ${name}`);
+          const res = runCommand(
+            "vercel",
+            [
+              ...vercelGlobalArgs(vercelScope, repoPath),
+              "env",
+              "add",
+              "NEXT_PUBLIC_LEGAL_MODE",
+              "production",
+              "--force"
+            ],
+            {
+              env: vercelEnv(),
+              inherit: true,
+              input: `${legal.mode}\n`
+            }
+          );
+
+          if (!res.ok) {
+            console.log(`Failed to set NEXT_PUBLIC_LEGAL_MODE on ${name}.`);
           }
-        );
+        }
       }
     }
 

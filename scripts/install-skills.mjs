@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { spawnSync } from "child_process";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,15 +27,24 @@ const installer = join(
   "install-skill-from-github.py"
 );
 
-if (!existsSync(installer)) {
-  console.error("skill-installer not found. Is Codex installed on this machine?");
-  console.error(`Expected: ${installer}`);
-  process.exit(1);
+const hasInstaller = existsSync(installer);
+const hasGit =
+  spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
+
+if (!hasInstaller) {
+  if (!hasGit) {
+    console.error("skill-installer not found and git is not available.");
+    console.error("Install Codex or install git to enable skill downloads.");
+    console.error(`Expected skill-installer at: ${installer}`);
+    process.exit(1);
+  }
+  console.warn("skill-installer not found. Falling back to git clone.");
+  console.warn(`Expected: ${installer}`);
 }
 
 const python = process.env.PYTHON || "python3";
 
-function installSkill(skill) {
+function installSkillWithInstaller(skill) {
   const destName = skill.dest || skill.path.split("/").pop();
   const destDir = join(skillsDir, destName);
 
@@ -70,10 +79,48 @@ function installSkill(skill) {
   }
 }
 
+function installSkillWithGit(skill) {
+  const destName = skill.dest || skill.path.split("/").pop();
+  const destDir = join(skillsDir, destName);
+
+  if (existsSync(destDir)) {
+    console.log(`- ${skill.name}: already installed at ${destDir}`);
+    return;
+  }
+
+  mkdirSync(skillsDir, { recursive: true });
+  const tempDir = join(tmpdir(), `codex-skill-${Date.now()}`);
+  const repoUrl = `https://github.com/${skill.repo}.git`;
+  const ref = skill.ref || "main";
+
+  console.log(`- Cloning ${skill.repo}@${ref}...`);
+  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", ref, repoUrl, tempDir], {
+    stdio: "inherit"
+  });
+  if (clone.status !== 0) {
+    console.error(`Failed to clone ${skill.repo}.`);
+    process.exit(clone.status || 1);
+  }
+
+  const sourceDir = join(tempDir, skill.path);
+  if (!existsSync(sourceDir)) {
+    console.error(`Path not found in repo: ${skill.path}`);
+    process.exit(1);
+  }
+
+  console.log(`- Installing ${skill.name}...`);
+  cpSync(sourceDir, destDir, { recursive: true });
+  rmSync(tempDir, { recursive: true, force: true });
+}
+
 console.log("Installing Codex skills from skills.lock.json");
 
 for (const skill of lock.skills || []) {
-  installSkill(skill);
+  if (hasInstaller) {
+    installSkillWithInstaller(skill);
+  } else {
+    installSkillWithGit(skill);
+  }
 }
 
 console.log("Done. Restart Codex to pick up new skills.");

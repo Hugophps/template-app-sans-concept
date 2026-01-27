@@ -24,7 +24,7 @@ What it does:
 - applies UI overrides (tokens + `globals.css`)
 - generates legal pages in `content/legal/<locale>/`
 - initializes git with `main` + `develop`
-- provisions GitHub / Vercel / Supabase (if CLIs + tokens are ready)
+- provisions GitHub / Vercel / Supabase (if CLIs + auth are ready)
 - writes `APP_TODO.md`
 
 ## Requirements
@@ -34,10 +34,10 @@ Install CLI tools:
 - `vercel` (Vercel CLI)
 - `supabase` (Supabase CLI)
 
-Export tokens (local environment):
-- `GITHUB_TOKEN`
-- `VERCEL_TOKEN`
-- `SUPABASE_ACCESS_TOKEN`
+Auth options (choose one per service):
+- GitHub: `GITHUB_TOKEN` or `gh auth login`
+- Vercel: `VERCEL_TOKEN` or `vercel login`
+- Supabase: `SUPABASE_ACCESS_TOKEN` or `supabase login`
 
 After installing skills via `pnpm install:skills`, restart Codex.
 
