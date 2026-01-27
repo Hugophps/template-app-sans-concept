@@ -1,18 +1,21 @@
+@import '../styles/ds-fonts.css';
+@import '../styles/ds-theme.css';
+
 :root {
   color-scheme: light;
-  --color-canvas: #f6f5f1;
-  --color-surface: #ffffff;
-  --color-border: #ded9cf;
-  --color-ink: #1f1b16;
-  --color-ink-muted: #4b463f;
-  --color-brand: #1b7f6a;
-  --color-brand-strong: #0f5f50;
-  --color-accent: #e6a547;
-  --font-display: 'Space Grotesk', sans-serif;
-  --font-body: 'IBM Plex Sans', sans-serif;
-  --radius-sm: 0.5rem;
-  --radius-md: 0.85rem;
-  --radius-lg: 1.25rem;
+  --color-canvas: var(--background, #f6f5f1);
+  --color-surface: var(--surface, #ffffff);
+  --color-border: var(--border, #ded9cf);
+  --color-ink: var(--foreground, #1f1b16);
+  --color-ink-muted: var(--muted-foreground, #4b463f);
+  --color-brand: var(--primary, #1b7f6a);
+  --color-brand-strong: var(--primary-600, #0f5f50);
+  --color-accent: var(--accent, #e6a547);
+  --font-display: var(--font-display, var(--font-heading, var(--font-sans, 'Space Grotesk', sans-serif)));
+  --font-body: var(--font-body, var(--font-sans, 'IBM Plex Sans', sans-serif));
+  --radius-sm: var(--radius-sm, 0.5rem);
+  --radius-md: var(--radius-md, 0.85rem);
+  --radius-lg: var(--radius-lg, 1.25rem);
   --shadow-soft: 0 18px 40px rgba(31, 27, 22, 0.08);
   --shadow-card: 0 12px 30px rgba(31, 27, 22, 0.12);
 }

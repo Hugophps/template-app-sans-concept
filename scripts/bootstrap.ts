@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
-import { basename, dirname, join, resolve, sep } from "path";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { basename, dirname, join, relative, resolve, sep } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
@@ -63,11 +63,10 @@ type LegalProfile = {
   legalContactEmail: string;
 };
 
-type UiRefs = {
-  figmaUrl: string;
-  figmaFileKey?: string;
-  screenshots: string[];
-  figmaTokenPresent: boolean;
+type DesignSystemSource = {
+  repoUrl: string;
+  ref: string;
+  copiedPaths: string[];
 };
 
 type SupabaseRefs = {
@@ -89,7 +88,7 @@ type BootstrapData = {
   i18n?: I18nConfig;
   legal?: LegalConfig;
   legalProfile?: LegalProfile;
-  uiRefs?: UiRefs;
+  designSystem?: DesignSystemSource;
   supabaseRefs?: SupabaseRefs;
   tokens?: TokenCheck;
   localRepoPath?: string;
@@ -286,6 +285,12 @@ function isValidHttpsUrl(value: string): boolean {
   return /^https:\\/\\//.test(value);
 }
 
+function isValidRepoUrl(value: string): boolean {
+  if (value.startsWith("git@")) return true;
+  if (value.startsWith("https://") || value.startsWith("http://")) return true;
+  return false;
+}
+
 function isExistingDirectory(pathValue: string): boolean {
   try {
     return statSync(pathValue).isDirectory();
@@ -325,12 +330,6 @@ function parseList(input: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function extractFigmaFileKey(url: string): string | undefined {
-  const match = url.match(/figma\\.com\\/(file|design)\\/([a-zA-Z0-9]+)\\//);
-  if (!match) return undefined;
-  return match[2];
 }
 
 function ensureDir(pathValue: string) {
@@ -422,7 +421,7 @@ function copyTemplate(sourceDir: string, targetDir: string) {
 }
 
 function writeAppTodo(state: BootstrapState) {
-  const { project, domains, scopes, appParams, i18n, legal, legalProfile, supabaseRefs, uiRefs } = state.data;
+  const { project, domains, scopes, appParams, i18n, legal, legalProfile, supabaseRefs, designSystem } = state.data;
   const lines: string[] = [];
 
   lines.push("# APP_TODO");
@@ -442,7 +441,10 @@ function writeAppTodo(state: BootstrapState) {
   lines.push("- VERCEL_TOKEN");
   lines.push("- GITHUB_TOKEN");
   lines.push("- SUPABASE_ACCESS_TOKEN");
-  lines.push("- FIGMA_TOKEN");
+  lines.push("");
+  lines.push("## Design system access");
+  lines.push("- Provide repo URL during bootstrap");
+  lines.push("- Ensure SSH key or HTTPS credentials are available");
   lines.push("");
   lines.push("## Infra (manual unless automated)");
   lines.push(`- GitHub repo: ${scopes?.githubOwner ?? "TBD"}/${project?.slug ?? "TBD"}`);
@@ -501,10 +503,10 @@ function writeAppTodo(state: BootstrapState) {
   lines.push("- Button: change email");
   lines.push("- Button: change language");
   lines.push("");
-  lines.push("## UI references");
-  lines.push(`- Figma URL: ${uiRefs?.figmaUrl ?? "TBD"}`);
-  lines.push(`- Figma token required: ${uiRefs?.figmaTokenPresent ? "yes" : "no"}`);
-  lines.push(`- Screenshots: ${uiRefs?.screenshots?.length ? uiRefs.screenshots.join(", ") : "TBD"}`);
+  lines.push("## Design system");
+  lines.push(`- Repo URL: ${designSystem?.repoUrl ?? "TBD"}`);
+  lines.push(`- Ref: ${designSystem?.ref ?? "TBD"}`);
+  lines.push(`- Copied paths: ${designSystem?.copiedPaths?.length ? designSystem.copiedPaths.join(", ") : "TBD"}`);
   lines.push("");
 
   const outputDir = state.data.localRepoPath || repoRoot;
@@ -868,8 +870,14 @@ function applyUiOverrides(state: BootstrapState) {
   const globalsPath = join(repoPath, "src", "app", "globals.css");
   if (existsSync(globalsPath)) {
     let css = readFileSync(globalsPath, "utf-8");
-    css = css.replace(/--color-brand: #[0-9a-fA-F]{3,8};/, `--color-brand: ${primary};`);
-    css = css.replace(/--color-brand-strong: #[0-9a-fA-F]{3,8};/, `--color-brand-strong: ${strong};`);
+    css = css.replace(
+      /--color-brand: .*?;/,
+      `--color-brand: var(--primary, ${primary});`
+    );
+    css = css.replace(
+      /--color-brand-strong: .*?;/,
+      `--color-brand-strong: var(--primary-600, ${strong});`
+    );
     writeFileSync(globalsPath, css);
   }
 
@@ -894,6 +902,63 @@ function applyUiOverrides(state: BootstrapState) {
       // ignore token parsing issues
     }
   }
+}
+
+function cloneDesignSystemRepo(repoUrl: string): { ok: boolean; path: string; ref: string } {
+  const tempDir = join(STATE_DIR, "design-system");
+  if (existsSync(tempDir)) {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  const res = runCommand("git", ["clone", "--depth", "1", repoUrl, tempDir], {
+    inherit: true
+  });
+  if (!res.ok) return { ok: false, path: tempDir, ref: "unknown" };
+
+  let ref = "unknown";
+  const headPath = join(tempDir, ".git", "HEAD");
+  if (existsSync(headPath)) {
+    const head = readFileSync(headPath, "utf-8").trim();
+    const match = head.match(/refs\\/heads\\/(.+)/);
+    if (match) ref = match[1];
+  }
+
+  return { ok: true, path: tempDir, ref };
+}
+
+function copyDesignSystemFiles(
+  sourceDir: string,
+  repoPath: string
+): string[] {
+  const copied: string[] = [];
+
+  const copyFile = (from: string, to: string) => {
+    if (!existsSync(from)) return;
+    ensureDir(dirname(to));
+    cpSync(from, to);
+    copied.push(relative(repoPath, to));
+  };
+
+  const copyDir = (from: string, to: string) => {
+    if (!existsSync(from)) return;
+    if (existsSync(to)) {
+      rmSync(to, { recursive: true, force: true });
+    }
+    ensureDir(dirname(to));
+    cpSync(from, to, { recursive: true });
+    copied.push(`${relative(repoPath, to)}/`);
+  };
+
+  const stylesDir = join(sourceDir, "src", "styles");
+  copyFile(join(stylesDir, "theme.css"), join(repoPath, "src", "styles", "ds-theme.css"));
+  copyFile(join(stylesDir, "fonts.css"), join(repoPath, "src", "styles", "ds-fonts.css"));
+  copyFile(join(stylesDir, "index.css"), join(repoPath, "src", "styles", "ds-index.css"));
+  copyFile(join(stylesDir, "tailwind.css"), join(repoPath, "src", "styles", "ds-tailwind.css"));
+
+  copyDir(join(sourceDir, "guidelines"), join(repoPath, "docs", "design-system"));
+  copyDir(join(sourceDir, "src", "components"), join(repoPath, "src", "design-system", "components"));
+
+  return copied;
 }
 
 const stepSkills: Step = {
@@ -1328,9 +1393,9 @@ const stepLocalRepo: Step = {
   }
 };
 
-const stepUiRefs: Step = {
-  id: "ui-refs",
-  title: "UI references (Figma + screenshots)",
+const stepDesignSystem: Step = {
+  id: "design-system",
+  title: "Design system source (Git repo)",
   run: async (state, ask) => {
     const repoPath = state.data.localRepoPath;
     if (!repoPath) {
@@ -1338,83 +1403,36 @@ const stepUiRefs: Step = {
       return { completed: false, exit: true };
     }
 
-    let figmaUrl = "";
-    let figmaFileKey: string | undefined;
+    let repoUrl = "";
+    let clonedPath = "";
+    let ref = "unknown";
     while (true) {
-      figmaUrl = await askValidated(
+      repoUrl = await askValidated(
         ask,
-        "Figma file URL (https://...)",
-        isValidHttpsUrl
+        "Design system repo URL (https:// or git@...)",
+        isValidRepoUrl
       );
-      figmaFileKey = extractFigmaFileKey(figmaUrl);
-      if (figmaFileKey) break;
-      console.log("Could not extract Figma file key from URL.");
+
+      console.log("Cloning design system repo...");
+      const result = cloneDesignSystemRepo(repoUrl);
+      if (result.ok) {
+        clonedPath = result.path;
+        ref = result.ref;
+        break;
+      }
+
+      console.log("Clone failed. Check repo access (SSH keys or HTTPS auth).");
     }
 
-    while (!process.env.FIGMA_TOKEN) {
-      console.log("FIGMA_TOKEN is required to read the Figma file.");
-      await ask("Set FIGMA_TOKEN and press Enter to re-check.");
-    }
-
-    let screenshotPaths: string[] = [];
-    while (true) {
-      const screenshotsInput = await askRequired(
-        ask,
-        "Screenshot file paths (comma-separated)"
-      );
-      screenshotPaths = parseList(screenshotsInput);
-      const invalid = screenshotPaths.filter((pathValue) => !isExistingFile(pathValue));
-      if (invalid.length === 0) break;
-      console.log("Invalid screenshot paths:");
-      for (const pathValue of invalid) console.log(`- ${pathValue}`);
-    }
-
-    const refsDir = join(repoPath, "ui", "refs");
-    const screenshotsDir = join(refsDir, "screenshots");
-    ensureDir(screenshotsDir);
-
-    for (const pathValue of screenshotPaths) {
-      const name = basename(pathValue);
-      cpSync(pathValue, join(screenshotsDir, name));
-    }
-
-    const figmaMeta = {
-      url: figmaUrl,
-      fileKey: figmaFileKey || null,
-      collectedAt: new Date().toISOString()
-    };
-    writeFileSync(join(refsDir, "figma.json"), JSON.stringify(figmaMeta, null, 2));
-
-    const uiBriefPath = join(refsDir, "UI_BRIEF.md");
-    if (!existsSync(uiBriefPath)) {
-      writeFileSync(
-        uiBriefPath,
-        `# UI Brief\n\n- Visual adjectives (4-6):\n- Density (compact / balanced / airy):\n- Do not do:\n- Key UI references (screenshots + Figma frames):\n`
-      );
-    }
-
-    state.data.uiRefs = {
-      figmaUrl,
-      figmaFileKey,
-      screenshots: screenshotPaths.map((pathValue) => basename(pathValue)),
-      figmaTokenPresent: true
-    };
-
-    return { completed: true };
-  }
-};
-
-const stepUiSync: Step = {
-  id: "ui-sync",
-  title: "Apply UI overrides",
-  run: async (state) => {
-    const repoPath = state.data.localRepoPath;
-    if (!repoPath) {
-      console.log("Missing repo path. Restart bootstrap.");
-      return { completed: false, exit: true };
-    }
-
+    const copiedPaths = copyDesignSystemFiles(clonedPath, repoPath);
     applyUiOverrides(state);
+
+    state.data.designSystem = {
+      repoUrl,
+      ref,
+      copiedPaths
+    };
+
     return { completed: true };
   }
 };
@@ -1696,7 +1714,7 @@ const stepSummary: Step = {
   id: "summary",
   title: "Review and generate TODO",
   run: async (state, ask) => {
-    const { project, domains, scopes, appParams, i18n, legal, legalProfile, uiRefs } = state.data;
+    const { project, domains, scopes, appParams, i18n, legal, legalProfile, designSystem } = state.data;
     console.log("Summary:");
     console.log(`- App name: ${project?.appName ?? "TBD"}`);
     console.log(`- Slug / Repo: ${project?.slug ?? "TBD"}`);
@@ -1723,9 +1741,9 @@ const stepSummary: Step = {
       console.log(`- Payments: ${legalProfile.payments ? "yes" : "no"}`);
       console.log(`- UGC: ${legalProfile.userGeneratedContent ? "yes" : "no"}`);
     }
-    if (uiRefs) {
-      console.log(`- Figma URL: ${uiRefs.figmaUrl}`);
-      console.log(`- Screenshots: ${uiRefs.screenshots.join(", ")}`);
+    if (designSystem) {
+      console.log(`- Design system repo: ${designSystem.repoUrl}`);
+      console.log(`- Design system ref: ${designSystem.ref}`);
     }
     if (state.data.supabaseRefs?.staging || state.data.supabaseRefs?.prod) {
       console.log(
@@ -1769,8 +1787,7 @@ async function main() {
     stepLegal,
     stepLegalProfile,
     stepLocalRepo,
-    stepUiRefs,
-    stepUiSync,
+    stepDesignSystem,
     stepLegalDocs,
     stepInfra,
     stepGitRemote,

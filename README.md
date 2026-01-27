@@ -16,7 +16,7 @@ The bootstrap will ask for:
 - app params (public name, support email, primary color, logo URL)
 - i18n locales
 - legal questionnaire
-- Figma URL + token + screenshots
+- design system repo URL (Git)
 
 What it does:
 - copies this template into a new folder
@@ -38,7 +38,6 @@ Export tokens (local environment):
 - `GITHUB_TOKEN`
 - `VERCEL_TOKEN`
 - `SUPABASE_ACCESS_TOKEN`
-- `FIGMA_TOKEN`
 
 After installing skills via `pnpm install:skills`, restart Codex.
 
@@ -78,6 +77,12 @@ Replace the logo URL and copy the HTML into the Supabase dashboard.
 ## Design system
 
 Tokens live in `src/ui/tokens.json`. Base UI components live in `src/ui/`.
+
+Bootstrap can pull a design system repo (Git). It copies:
+- `src/styles/theme.css` -> `src/styles/ds-theme.css`
+- `src/styles/fonts.css` -> `src/styles/ds-fonts.css`
+- `guidelines/` -> `docs/design-system/`
+- `src/components/` -> `src/design-system/components/`
 
 ## i18n
 
