@@ -28,6 +28,7 @@ What it does:
 - links Vercel domains (staging + prod) if requested
 - optionally connects the Vercel project to the GitHub repo
 - optionally deploys preview + production to Vercel (auto domains)
+- optionally sets Supabase env vars on Vercel (preview = staging, production = prod)
 - writes `APP_TODO.md`
 
 ## Requirements

@@ -512,6 +512,109 @@ function supabaseEnv() {
   };
 }
 
+type SupabaseKeys = {
+  anonKey?: string;
+  publishableKey?: string;
+  serviceRoleKey?: string;
+};
+
+function parseSupabaseKeys(raw: string): SupabaseKeys {
+  try {
+    const parsed = JSON.parse(raw);
+    const keys: SupabaseKeys = {};
+
+    const setKey = (name: string, value?: unknown) => {
+      if (!value || typeof value !== "string") return;
+      const lower = name.toLowerCase();
+      if (lower.includes("publishable")) {
+        if (!keys.publishableKey) keys.publishableKey = value.trim();
+        return;
+      }
+      if (lower.includes("anon")) {
+        if (!keys.anonKey) keys.anonKey = value.trim();
+        return;
+      }
+      if (lower.includes("service")) {
+        if (!keys.serviceRoleKey) keys.serviceRoleKey = value.trim();
+      }
+    };
+
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as Record<string, unknown>;
+        const name =
+          (record.name as string) ||
+          (record.type as string) ||
+          (record.description as string) ||
+          "";
+        const value =
+          (record.key as string) ||
+          (record.api_key as string) ||
+          (record.apiKey as string) ||
+          (record.value as string) ||
+          (record.secret as string);
+        if (name) setKey(name, value);
+      }
+      return keys;
+    }
+
+    if (parsed && typeof parsed === "object") {
+      for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+        setKey(name, value);
+      }
+      return keys;
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  return {};
+}
+
+function getSupabaseKeys(projectRef: string): SupabaseKeys {
+  const res = runCommand(
+    "supabase",
+    ["projects", "api-keys", "--project-ref", projectRef, "--output", "json"],
+    { env: supabaseEnv() }
+  );
+  if (!res.ok) return {};
+  return parseSupabaseKeys(res.stdout);
+}
+
+function getSupabaseProjectUrl(projectRef: string): string {
+  const res = runCommand(
+    "supabase",
+    ["projects", "list", "--output", "json"],
+    { env: supabaseEnv() }
+  );
+  if (res.ok) {
+    try {
+      const parsed = JSON.parse(res.stdout) as Array<Record<string, unknown>>;
+      for (const item of parsed) {
+        const ref =
+          (item.ref as string) ||
+          (item.project_ref as string) ||
+          (item.projectRef as string) ||
+          (item.id as string);
+        if (ref && ref === projectRef) {
+          const url =
+            (item.api_url as string) ||
+            (item.rest_url as string) ||
+            (item.url as string) ||
+            (item.project_url as string) ||
+            (item.apiUrl as string);
+          if (url) return url;
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  return `https://${projectRef}.supabase.co`;
+}
+
 function checkGhAuth(): AuthStatus {
   const hasToken = Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
   const res = runCommand("gh", ["auth", "status", "-h", "github.com"], {
@@ -1875,6 +1978,127 @@ const stepInfra: Step = {
       }
     }
 
+    let linked = false;
+    const ensureVercelLinked = (repoPath: string) => {
+      if (linked) return;
+      console.log(`Linking local repo to ${vercelProject}...`);
+      runCommand(
+        "vercel",
+        [
+          ...vercelGlobalArgs(vercelScope, repoPath),
+          "link",
+          "--yes",
+          "--project",
+          vercelProject
+        ],
+        { env: vercelEnv(), inherit: true }
+      );
+      linked = true;
+    };
+
+    const setSupabaseEnv = await askYesNo(
+      ask,
+      "Set Supabase env vars on Vercel now? (preview = staging, production = prod)"
+    );
+    if (setSupabaseEnv) {
+      const repoPath = state.data.localRepoPath;
+      const stagingRef = state.data.supabaseRefs?.staging;
+      const prodRef = state.data.supabaseRefs?.prod;
+      if (!repoPath || !stagingRef || !prodRef) {
+        console.log("Missing repo path or Supabase refs; skipping Supabase env setup.");
+      } else {
+        ensureVercelLinked(repoPath);
+
+        const useServiceRole = await askYesNo(
+          ask,
+          "Also set SUPABASE_SERVICE_ROLE_KEY? (server-only)"
+        );
+
+        const envMap = [
+          { target: "preview" as const, ref: stagingRef },
+          { target: "production" as const, ref: prodRef }
+        ];
+
+        for (const entry of envMap) {
+          const supabaseUrl = getSupabaseProjectUrl(entry.ref);
+          const keys = getSupabaseKeys(entry.ref);
+          const publicKey = keys.publishableKey || keys.anonKey;
+          const serviceKey = keys.serviceRoleKey;
+
+          let finalPublicKey = publicKey;
+          if (!finalPublicKey) {
+            finalPublicKey = await askRequired(
+              ask,
+              `Paste Supabase publishable/anon key for ${entry.ref} (${entry.target})`
+            );
+          }
+
+          console.log(`Setting NEXT_PUBLIC_SUPABASE_URL (${entry.target})`);
+          runCommand(
+            "vercel",
+            [
+              ...vercelGlobalArgs(vercelScope, repoPath),
+              "env",
+              "add",
+              "NEXT_PUBLIC_SUPABASE_URL",
+              entry.target,
+              "--force"
+            ],
+            {
+              env: vercelEnv(),
+              inherit: true,
+              input: `${supabaseUrl}\n`
+            }
+          );
+
+          console.log(`Setting NEXT_PUBLIC_SUPABASE_ANON_KEY (${entry.target})`);
+          runCommand(
+            "vercel",
+            [
+              ...vercelGlobalArgs(vercelScope, repoPath),
+              "env",
+              "add",
+              "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+              entry.target,
+              "--force"
+            ],
+            {
+              env: vercelEnv(),
+              inherit: true,
+              input: `${finalPublicKey}\n`
+            }
+          );
+
+          if (useServiceRole) {
+            let finalServiceKey = serviceKey;
+            if (!finalServiceKey) {
+              finalServiceKey = await askRequired(
+                ask,
+                `Paste Supabase service role key for ${entry.ref} (${entry.target})`
+              );
+            }
+            console.log(`Setting SUPABASE_SERVICE_ROLE_KEY (${entry.target})`);
+            runCommand(
+              "vercel",
+              [
+                ...vercelGlobalArgs(vercelScope, repoPath),
+                "env",
+                "add",
+                "SUPABASE_SERVICE_ROLE_KEY",
+                entry.target,
+                "--force"
+              ],
+              {
+                env: vercelEnv(),
+                inherit: true,
+                input: `${finalServiceKey}\n`
+              }
+            );
+          }
+        }
+      }
+    }
+
     // Vercel env var for legal mode (optional)
     const setLegal = await askYesNo(
       ask,
@@ -1885,18 +2109,7 @@ const stepInfra: Step = {
       if (!repoPath) {
         console.log("Missing local repo path; skipping Vercel env setup.");
       } else {
-        console.log(`Linking local repo to ${vercelProject}...`);
-        runCommand(
-          "vercel",
-          [
-            ...vercelGlobalArgs(vercelScope, repoPath),
-            "link",
-            "--yes",
-            "--project",
-            vercelProject
-          ],
-          { env: vercelEnv(), inherit: true }
-        );
+        ensureVercelLinked(repoPath);
 
         const envTargets = ["preview", "production"] as const;
         for (const target of envTargets) {
