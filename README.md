@@ -27,6 +27,7 @@ What it does:
 - provisions GitHub / Vercel / Supabase (if CLIs + auth are ready)
 - links Vercel domains (staging + prod) if requested
 - optionally connects the Vercel project to the GitHub repo
+- optionally deploys preview + production to Vercel (auto domains)
 - writes `APP_TODO.md`
 
 ## Requirements

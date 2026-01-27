@@ -2032,6 +2032,44 @@ const stepGitRemote: Step = {
       }
     }
 
+    const deployNow = await askYesNo(
+      ask,
+      "Deploy to Vercel now? (preview + production)"
+    );
+    if (deployNow) {
+      runCommand(
+        "vercel",
+        [
+          ...vercelGlobalArgs(vercelScope, repoPath),
+          "link",
+          "--yes",
+          "--project",
+          vercelProject
+        ],
+        { env: vercelEnv(), inherit: true }
+      );
+
+      console.log("Deploying preview (Vercel auto domain)...");
+      const preview = runCommand(
+        "vercel",
+        [...vercelGlobalArgs(vercelScope, repoPath), "--yes"],
+        { env: vercelEnv(), inherit: true }
+      );
+      if (!preview.ok) {
+        console.log("Preview deploy failed. Fix config/env vars and retry with `vercel`.");
+      }
+
+      console.log("Deploying production (Vercel auto domain)...");
+      const prod = runCommand(
+        "vercel",
+        [...vercelGlobalArgs(vercelScope, repoPath), "--prod", "--yes"],
+        { env: vercelEnv(), inherit: true }
+      );
+      if (!prod.ok) {
+        console.log("Production deploy failed. Fix config/env vars and retry with `vercel --prod`.");
+      }
+    }
+
     return { completed: true };
   }
 };
