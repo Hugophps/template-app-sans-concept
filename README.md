@@ -84,6 +84,12 @@ Bootstrap can pull a design system repo (Git). It copies:
 - `guidelines/` -> `docs/design-system/`
 - `src/components/` -> `src/design-system/components/`
 
+## Vercel environments
+
+The bootstrap uses a single Vercel project. Use:
+- **Preview** for staging
+- **Production** for prod
+
 ## i18n
 
 Locale configuration is stored in `src/config/app.json`.

@@ -616,9 +616,7 @@ function writeAppTodo(state: BootstrapState) {
   lines.push("");
   lines.push("## Infra (manual unless automated)");
   lines.push(`- GitHub repo: ${scopes?.githubOwner ?? "TBD"}/${project?.slug ?? "TBD"}`);
-  lines.push(
-    `- Vercel projects: ${project?.slug ?? "app"}-staging / ${project?.slug ?? "app"}-prod`
-  );
+  lines.push(`- Vercel project: ${project?.slug ?? "app"}`);
   lines.push(
     `- Supabase projects: ${project?.slug ?? "app"}-staging / ${project?.slug ?? "app"}-prod (region ${scopes?.supabaseRegion ?? "EU"})`
   );
@@ -626,7 +624,7 @@ function writeAppTodo(state: BootstrapState) {
     lines.push(`- Supabase project refs: staging=${supabaseRefs?.staging ?? "TBD"}, prod=${supabaseRefs?.prod ?? "TBD"}`);
   }
   lines.push("- DNS: staging + prod subdomains");
-  lines.push("- Vercel env vars (staging + prod):");
+  lines.push("- Vercel env vars (preview + production):");
   lines.push("  - NEXT_PUBLIC_SUPABASE_URL");
   lines.push("  - NEXT_PUBLIC_SUPABASE_ANON_KEY");
   lines.push("  - SUPABASE_SERVICE_ROLE_KEY (optional, server-only)");
@@ -1746,7 +1744,7 @@ const stepInfra: Step = {
       break;
     }
 
-    const vercelProjects = [`${project.slug}-staging`, `${project.slug}-prod`];
+    const vercelProject = project.slug;
     const vercelScope = scopes.vercelScope;
 
     while (true) {
@@ -1763,41 +1761,39 @@ const stepInfra: Step = {
       await ask("Press Enter to re-check Vercel authentication.");
     }
 
-    for (const name of vercelProjects) {
-      while (true) {
-        const list = runCommand(
-          "vercel",
-          [...vercelGlobalArgs(vercelScope), "project", "ls", "--json"],
-          { env: vercelEnv() }
-        );
+    while (true) {
+      const list = runCommand(
+        "vercel",
+        [...vercelGlobalArgs(vercelScope), "project", "ls", "--json"],
+        { env: vercelEnv() }
+      );
 
-        if (list.ok) {
-          try {
-            const parsed = JSON.parse(list.stdout) as Array<{ name?: string }>;
-            if (parsed.some((item) => item.name === name)) break;
-          } catch {
-            // ignore parse errors
-          }
+      if (list.ok) {
+        try {
+          const parsed = JSON.parse(list.stdout) as Array<{ name?: string }>;
+          if (parsed.some((item) => item.name === vercelProject)) break;
+        } catch {
+          // ignore parse errors
         }
-
-        console.log(`Create Vercel project: ${name}`);
-        const res = runCommand(
-          "vercel",
-          [...vercelGlobalArgs(vercelScope), "project", "add", name],
-          { env: vercelEnv(), inherit: true }
-        );
-
-        if (!res.ok) {
-          const retry = await askYesNo(
-            ask,
-            "Vercel project creation failed. Fix and retry?"
-          );
-          if (!retry) break;
-          continue;
-        }
-
-        break;
       }
+
+      console.log(`Create Vercel project: ${vercelProject}`);
+      const res = runCommand(
+        "vercel",
+        [...vercelGlobalArgs(vercelScope), "project", "add", vercelProject],
+        { env: vercelEnv(), inherit: true }
+      );
+
+      if (!res.ok) {
+        const retry = await askYesNo(
+          ask,
+          "Vercel project creation failed. Fix and retry?"
+        );
+        if (!retry) break;
+        continue;
+      }
+
+      break;
     }
 
     const supabaseProjects = [
@@ -1845,22 +1841,29 @@ const stepInfra: Step = {
     // Vercel env var for legal mode (optional)
     const setLegal = await askYesNo(
       ask,
-      "Set NEXT_PUBLIC_LEGAL_MODE on Vercel projects now?"
+      "Set NEXT_PUBLIC_LEGAL_MODE on Vercel (preview + production) now?"
     );
     if (setLegal) {
       const repoPath = state.data.localRepoPath;
       if (!repoPath) {
         console.log("Missing local repo path; skipping Vercel env setup.");
       } else {
-        for (const name of vercelProjects) {
-          console.log(`Linking local repo to ${name}...`);
-          runCommand(
-            "vercel",
-            [...vercelGlobalArgs(vercelScope, repoPath), "link", "--yes", "--project", name],
-            { env: vercelEnv(), inherit: true }
-          );
+        console.log(`Linking local repo to ${vercelProject}...`);
+        runCommand(
+          "vercel",
+          [
+            ...vercelGlobalArgs(vercelScope, repoPath),
+            "link",
+            "--yes",
+            "--project",
+            vercelProject
+          ],
+          { env: vercelEnv(), inherit: true }
+        );
 
-          console.log(`Setting NEXT_PUBLIC_LEGAL_MODE on ${name}`);
+        const envTargets = ["preview", "production"] as const;
+        for (const target of envTargets) {
+          console.log(`Setting NEXT_PUBLIC_LEGAL_MODE on ${vercelProject} (${target})`);
           const res = runCommand(
             "vercel",
             [
@@ -1868,7 +1871,7 @@ const stepInfra: Step = {
               "env",
               "add",
               "NEXT_PUBLIC_LEGAL_MODE",
-              "production",
+              target,
               "--force"
             ],
             {
@@ -1879,7 +1882,7 @@ const stepInfra: Step = {
           );
 
           if (!res.ok) {
-            console.log(`Failed to set NEXT_PUBLIC_LEGAL_MODE on ${name}.`);
+            console.log(`Failed to set NEXT_PUBLIC_LEGAL_MODE for ${target}.`);
           }
         }
       }
