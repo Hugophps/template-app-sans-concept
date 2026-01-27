@@ -731,10 +731,11 @@ function writeAppTodo(state: BootstrapState) {
   lines.push(`  - Staging: ${domains?.stagingDomain ?? "staging.example.com"}`);
   lines.push(`  - Production: ${domains?.prodDomain ?? "app.example.com"}`);
   lines.push("  - Map staging domain to Preview/branch in Vercel if needed");
+  lines.push("- Vercel production branch should be `main`");
   lines.push("- Vercel env vars (preview + production):");
   lines.push("  - NEXT_PUBLIC_SUPABASE_URL");
   lines.push("  - NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  lines.push("  - SUPABASE_SERVICE_ROLE_KEY (optional, server-only)");
+  lines.push("  - SUPABASE_SERVICE_ROLE_KEY (server-only, never expose client-side)");
   lines.push(`  - NEXT_PUBLIC_LEGAL_MODE=${legal?.mode ?? "web"}`);
   lines.push("");
   lines.push("## App params");
@@ -1998,7 +1999,7 @@ const stepInfra: Step = {
 
     const setSupabaseEnv = await askYesNo(
       ask,
-      "Set Supabase env vars on Vercel now? (preview = staging, production = prod)"
+      "Set Supabase env vars on Vercel now? (preview = staging, production = prod, includes service role key)"
     );
     if (setSupabaseEnv) {
       const repoPath = state.data.localRepoPath;
@@ -2008,11 +2009,6 @@ const stepInfra: Step = {
         console.log("Missing repo path or Supabase refs; skipping Supabase env setup.");
       } else {
         ensureVercelLinked(repoPath);
-
-        const useServiceRole = await askYesNo(
-          ask,
-          "Also set SUPABASE_SERVICE_ROLE_KEY? (server-only)"
-        );
 
         const envMap = [
           { target: "preview" as const, ref: stagingRef },
@@ -2069,32 +2065,30 @@ const stepInfra: Step = {
             }
           );
 
-          if (useServiceRole) {
-            let finalServiceKey = serviceKey;
-            if (!finalServiceKey) {
-              finalServiceKey = await askRequired(
-                ask,
-                `Paste Supabase service role key for ${entry.ref} (${entry.target})`
-              );
-            }
-            console.log(`Setting SUPABASE_SERVICE_ROLE_KEY (${entry.target})`);
-            runCommand(
-              "vercel",
-              [
-                ...vercelGlobalArgs(vercelScope, repoPath),
-                "env",
-                "add",
-                "SUPABASE_SERVICE_ROLE_KEY",
-                entry.target,
-                "--force"
-              ],
-              {
-                env: vercelEnv(),
-                inherit: true,
-                input: `${finalServiceKey}\n`
-              }
+          let finalServiceKey = serviceKey;
+          if (!finalServiceKey) {
+            finalServiceKey = await askRequired(
+              ask,
+              `Paste Supabase service role key for ${entry.ref} (${entry.target})`
             );
           }
+          console.log(`Setting SUPABASE_SERVICE_ROLE_KEY (${entry.target})`);
+          runCommand(
+            "vercel",
+            [
+              ...vercelGlobalArgs(vercelScope, repoPath),
+              "env",
+              "add",
+              "SUPABASE_SERVICE_ROLE_KEY",
+              entry.target,
+              "--force"
+            ],
+            {
+              env: vercelEnv(),
+              inherit: true,
+              input: `${finalServiceKey}\n`
+            }
+          );
         }
       }
     }
@@ -2231,6 +2225,7 @@ const stepGitRemote: Step = {
       ask,
       "Connect Vercel project to this GitHub repo now?"
     );
+    let vercelGitConnected = false;
     if (connectGit) {
       const connect = runCommand(
         "vercel",
@@ -2242,44 +2237,78 @@ const stepGitRemote: Step = {
         console.log("Vercel git connect failed. You can connect manually in Vercel UI.");
         console.log(`Project: ${vercelProject}`);
         console.log(`Repo: ${repoFullName}`);
+      } else {
+        vercelGitConnected = true;
       }
     }
 
     const deployNow = await askYesNo(
       ask,
-      "Deploy to Vercel now? (preview + production)"
+      "Deploy to Vercel now? (preview from develop, production from main)"
     );
     if (deployNow) {
-      runCommand(
-        "vercel",
-        [
-          ...vercelGlobalArgs(vercelScope, repoPath),
-          "link",
-          "--yes",
-          "--project",
-          vercelProject
-        ],
-        { env: vercelEnv(), inherit: true }
-      );
+      const currentBranchRes = runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd: repoPath
+      });
+      const currentBranch = currentBranchRes.ok ? currentBranchRes.stdout.trim() : "";
 
-      console.log("Deploying preview (Vercel auto domain)...");
-      const preview = runCommand(
-        "vercel",
-        [...vercelGlobalArgs(vercelScope, repoPath), "--yes"],
-        { env: vercelEnv(), inherit: true }
-      );
-      if (!preview.ok) {
-        console.log("Preview deploy failed. Fix config/env vars and retry with `vercel`.");
-      }
+      const checkoutBranch = (branch: string) => {
+        runCommand("git", ["checkout", branch], { cwd: repoPath, inherit: true });
+      };
 
-      console.log("Deploying production (Vercel auto domain)...");
-      const prod = runCommand(
-        "vercel",
-        [...vercelGlobalArgs(vercelScope, repoPath), "--prod", "--yes"],
-        { env: vercelEnv(), inherit: true }
-      );
-      if (!prod.ok) {
-        console.log("Production deploy failed. Fix config/env vars and retry with `vercel --prod`.");
+      const pushBranch = (branch: string) => {
+        runCommand("git", ["push", "-u", "origin", branch], { cwd: repoPath, inherit: true });
+      };
+
+      if (vercelGitConnected) {
+        console.log("Triggering deploys via Git integration...");
+        checkoutBranch("develop");
+        pushBranch("develop");
+        checkoutBranch("main");
+        pushBranch("main");
+        if (currentBranch && currentBranch !== "main") {
+          checkoutBranch(currentBranch);
+        }
+        console.log("Vercel will build preview from develop and production from main.");
+      } else {
+        console.log("Git not connected. Deploying directly from local branches...");
+        runCommand(
+          "vercel",
+          [
+            ...vercelGlobalArgs(vercelScope, repoPath),
+            "link",
+            "--yes",
+            "--project",
+            vercelProject
+          ],
+          { env: vercelEnv(), inherit: true }
+        );
+
+        checkoutBranch("develop");
+        console.log("Deploying preview (Vercel auto domain)...");
+        const preview = runCommand(
+          "vercel",
+          [...vercelGlobalArgs(vercelScope, repoPath), "--yes"],
+          { env: vercelEnv(), inherit: true }
+        );
+        if (!preview.ok) {
+          console.log("Preview deploy failed. Fix config/env vars and retry with `vercel`.");
+        }
+
+        checkoutBranch("main");
+        console.log("Deploying production (Vercel auto domain)...");
+        const prod = runCommand(
+          "vercel",
+          [...vercelGlobalArgs(vercelScope, repoPath), "--prod", "--yes"],
+          { env: vercelEnv(), inherit: true }
+        );
+        if (!prod.ok) {
+          console.log("Production deploy failed. Fix config/env vars and retry with `vercel --prod`.");
+        }
+
+        if (currentBranch && currentBranch !== "main") {
+          checkoutBranch(currentBranch);
+        }
       }
     }
 

@@ -28,7 +28,7 @@ What it does:
 - links Vercel domains (staging + prod) if requested
 - optionally connects the Vercel project to the GitHub repo
 - optionally deploys preview + production to Vercel (auto domains)
-- optionally sets Supabase env vars on Vercel (preview = staging, production = prod)
+- optionally sets Supabase env vars on Vercel (preview = staging, production = prod, includes service role key)
 - writes `APP_TODO.md`
 
 ## Requirements
@@ -93,6 +93,8 @@ Bootstrap can pull a design system repo (Git). It copies:
 The bootstrap uses a single Vercel project. Use:
 - **Preview** for staging
 - **Production** for prod
+
+Make sure the Vercel **Production Branch** is set to `main`.
 
 ## i18n
 
