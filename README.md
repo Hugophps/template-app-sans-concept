@@ -26,6 +26,7 @@ What it does:
 - initializes git with `main` + `develop`
 - provisions GitHub / Vercel / Supabase (if CLIs + auth are ready)
 - links Vercel domains (staging + prod) if requested
+- optionally connects the Vercel project to the GitHub repo
 - writes `APP_TODO.md`
 
 ## Requirements

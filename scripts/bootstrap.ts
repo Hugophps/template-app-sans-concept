@@ -2012,6 +2012,26 @@ const stepGitRemote: Step = {
       if (!retry) break;
     }
 
+    const vercelScope = scopes.vercelScope;
+    const vercelProject = project.slug;
+    const connectGit = await askYesNo(
+      ask,
+      "Connect Vercel project to this GitHub repo now?"
+    );
+    if (connectGit) {
+      const connect = runCommand(
+        "vercel",
+        [...vercelGlobalArgs(vercelScope, repoPath), "git", "connect", remoteUrl],
+        { env: vercelEnv(), inherit: true }
+      );
+
+      if (!connect.ok) {
+        console.log("Vercel git connect failed. You can connect manually in Vercel UI.");
+        console.log(`Project: ${vercelProject}`);
+        console.log(`Repo: ${repoFullName}`);
+      }
+    }
+
     return { completed: true };
   }
 };
