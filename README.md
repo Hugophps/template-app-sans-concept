@@ -25,6 +25,7 @@ What it does:
 - generates legal pages in `content/legal/<locale>/`
 - initializes git with `main` + `develop`
 - provisions GitHub / Vercel / Supabase (if CLIs + auth are ready)
+- links Vercel domains (staging + prod) if requested
 - writes `APP_TODO.md`
 
 ## Requirements

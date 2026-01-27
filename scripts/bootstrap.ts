@@ -624,6 +624,10 @@ function writeAppTodo(state: BootstrapState) {
     lines.push(`- Supabase project refs: staging=${supabaseRefs?.staging ?? "TBD"}, prod=${supabaseRefs?.prod ?? "TBD"}`);
   }
   lines.push("- DNS: staging + prod subdomains");
+  lines.push("- Vercel domains:");
+  lines.push(`  - Staging: ${domains?.stagingDomain ?? "staging.example.com"}`);
+  lines.push(`  - Production: ${domains?.prodDomain ?? "app.example.com"}`);
+  lines.push("  - Map staging domain to Preview/branch in Vercel if needed");
   lines.push("- Vercel env vars (preview + production):");
   lines.push("  - NEXT_PUBLIC_SUPABASE_URL");
   lines.push("  - NEXT_PUBLIC_SUPABASE_ANON_KEY");
@@ -1794,6 +1798,39 @@ const stepInfra: Step = {
       }
 
       break;
+    }
+
+    const setDomains = await askYesNo(
+      ask,
+      "Add staging + production domains to the Vercel project now?"
+    );
+    if (setDomains) {
+      const domains = state.data.domains;
+      const domainList = [
+        domains?.stagingDomain,
+        domains?.prodDomain
+      ].filter(Boolean) as string[];
+
+      for (const domain of domainList) {
+        while (true) {
+          console.log(`Adding domain ${domain} to ${vercelProject}`);
+          const res = runCommand(
+            "vercel",
+            [...vercelGlobalArgs(vercelScope), "domains", "add", domain, vercelProject],
+            { env: vercelEnv(), inherit: true }
+          );
+          if (!res.ok) {
+            const retry = await askYesNo(
+              ask,
+              "Domain add failed. Fix DNS/ownership and retry?"
+            );
+            if (!retry) break;
+            continue;
+          }
+          break;
+        }
+      }
+      console.log("Note: map staging domain to Preview/branch in Vercel if needed.");
     }
 
     const supabaseProjects = [
