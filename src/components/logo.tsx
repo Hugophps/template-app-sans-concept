@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 import { appConfig } from '@/config/app';
 
 export const Logo = () => (
